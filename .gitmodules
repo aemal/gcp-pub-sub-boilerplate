@@ -1,3 +1,14 @@
+[submodule "service1"]
+	path = service1
+	url = https://github.com/aemal/gcp-pub-sub-boilerplate-service1.git
+	branch = main
+
+[submodule "service2"]
+	path = service2
+	url = https://github.com/aemal/gcp-pub-sub-boilerplate-service2.git
+	branch = main
+
 [submodule "pubsub-emulator-ui"]
 	path = pubsub-emulator-ui
-	url = git@github.com:aemal/pubsub-emulator-ui.git
+	url = https://github.com/aemal/gcp-pub-sub-boilerplate-pubsub-emulator-ui.git
+	branch = main
