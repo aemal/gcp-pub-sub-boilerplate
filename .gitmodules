@@ -1,0 +1,3 @@
+[submodule "pubsub-emulator-ui"]
+	path = pubsub-emulator-ui
+	url = git@github.com:aemal/pubsub-emulator-ui.git
