@@ -1,6 +1,23 @@
 {
   "topics": [
     {
+      "name": "top5",
+      "subscriptions": [
+        {
+          "name": "top5-sub1",
+          "type": "push",
+          "pushEndpoint": "http://localhost:3001/top5sub1",
+          "ackDeadlineSeconds": 30,
+          "messageRetentionDuration": "2592000s",
+          "pushConfig": {
+            "attributes": {
+              "x-goog-version": "v1"
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "my-topic",
       "subscriptions": [
         {
