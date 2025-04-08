@@ -1,0 +1,35 @@
+name: Deploy Pub/Sub Infrastructure
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'scripts/setup-gcp.sh'
+      - '.github/workflows/pubsub-infrastructure.yml'
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: gcp-pubsub-456020
+
+jobs:
+  deploy-infrastructure:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - id: auth
+      uses: 'google-github-actions/auth@v2'
+      with:
+        workload_identity_provider: '${{ secrets.WIF_PROVIDER }}'
+
+    - name: Set up Cloud SDK
+      uses: 'google-github-actions/setup-gcloud@v2'
+
+    - name: Deploy Pub/Sub Infrastructure
+      run: |
+        chmod +x scripts/setup-gcp.sh
+        ./scripts/setup-gcp.sh 

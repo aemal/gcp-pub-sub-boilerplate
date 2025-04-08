@@ -1,0 +1,39 @@
+{
+  "topics": [
+    {
+      "name": "my-topic",
+      "subscriptions": [
+        {
+          "name": "my-subscription",
+          "type": "pull",
+          "ackDeadlineSeconds": 10,
+          "messageRetentionDuration": "604800s"
+        }
+      ]
+    },
+    {
+      "name": "notifications",
+      "subscriptions": [
+        {
+          "name": "email-notifications",
+          "type": "push",
+          "pushEndpoint": "https://email-service-xxxxx-uc.a.run.app/notifications",
+          "ackDeadlineSeconds": 30,
+          "messageRetentionDuration": "2592000s",
+          "pushConfig": {
+            "attributes": {
+              "x-goog-version": "v1"
+            }
+          }
+        },
+        {
+          "name": "push-notifications",
+          "type": "push",
+          "pushEndpoint": "https://push-service-xxxxx-uc.a.run.app/notifications",
+          "ackDeadlineSeconds": 20,
+          "messageRetentionDuration": "604800s"
+        }
+      ]
+    }
+  ]
+} 

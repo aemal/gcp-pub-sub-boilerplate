@@ -1,0 +1,59 @@
+name: Deploy to Cloud Run
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: gcp-pubsub-456020
+  REGION: us-central1
+  PUBLISHER_SERVICE: pubsub-publisher
+  SUBSCRIBER_SERVICE: pubsub-subscriber
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - id: auth
+      uses: 'google-github-actions/auth@v2'
+      with:
+        workload_identity_provider: '${{ secrets.WIF_PROVIDER }}'
+
+    - name: Set up Cloud SDK
+      uses: 'google-github-actions/setup-gcloud@v2'
+
+    - name: Configure Docker
+      run: gcloud auth configure-docker
+
+    # Deploy Publisher Service
+    - name: Build and Deploy Publisher
+      working-directory: ./service1
+      run: |
+        docker build -t gcr.io/$PROJECT_ID/$PUBLISHER_SERVICE:${{ github.sha }} .
+        docker push gcr.io/$PROJECT_ID/$PUBLISHER_SERVICE:${{ github.sha }}
+        gcloud run deploy $PUBLISHER_SERVICE \
+          --image gcr.io/$PROJECT_ID/$PUBLISHER_SERVICE:${{ github.sha }} \
+          --region $REGION \
+          --platform managed \
+          --allow-unauthenticated \
+          --set-env-vars="PUBSUB_PROJECT_ID=$PROJECT_ID"
+
+    # Deploy Subscriber Service
+    - name: Build and Deploy Subscriber
+      working-directory: ./service2
+      run: |
+        docker build -t gcr.io/$PROJECT_ID/$SUBSCRIBER_SERVICE:${{ github.sha }} .
+        docker push gcr.io/$PROJECT_ID/$SUBSCRIBER_SERVICE:${{ github.sha }}
+        gcloud run deploy $SUBSCRIBER_SERVICE \
+          --image gcr.io/$PROJECT_ID/$SUBSCRIBER_SERVICE:${{ github.sha }} \
+          --region $REGION \
+          --platform managed \
+          --allow-unauthenticated \
+          --set-env-vars="PUBSUB_PROJECT_ID=$PROJECT_ID" 

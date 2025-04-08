@@ -12,6 +12,14 @@ cleanup() {
     sleep 2
 }
 
+# Check if jq is installed
+if ! command -v jq &> /dev/null; then
+    echo "Error: jq is required but not installed. Please install it first."
+    echo "macOS: brew install jq"
+    echo "Ubuntu/Debian: sudo apt-get install jq"
+    exit 1
+fi
+
 # Run cleanup before starting to ensure clean slate
 cleanup
 
@@ -31,12 +39,63 @@ sleep 5  # Wait for emulator to start
 export PUBSUB_EMULATOR_HOST=localhost:8790
 export PUBSUB_PROJECT_ID=${PUBSUB_PROJECT_ID:-gcp-pubsub-456020}
 
-# Create topic and subscription
-echo "Creating topic and subscription..."
-curl -X PUT "http://localhost:8790/v1/projects/$PUBSUB_PROJECT_ID/topics/my-topic" || true
-curl -X PUT "http://localhost:8790/v1/projects/$PUBSUB_PROJECT_ID/subscriptions/my-subscription" \
-    -H "Content-Type: application/json" \
-    -d "{\"topic\": \"projects/$PUBSUB_PROJECT_ID/topics/my-topic\"}" || true
+# Read the configuration file
+CONFIG_FILE="$ROOT_DIR/config/pubsub-config.json"
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "Error: Configuration file $CONFIG_FILE not found"
+    exit 1
+fi
+
+# Create topics and subscriptions
+echo "Creating topics and subscriptions..."
+jq -c '.topics[]' "$CONFIG_FILE" | while read -r topic; do
+    topic_name=$(echo "$topic" | jq -r '.name')
+    
+    echo "Creating topic: $topic_name"
+    curl -X PUT "http://localhost:8790/v1/projects/$PUBSUB_PROJECT_ID/topics/$topic_name" || true
+    
+    # Create subscriptions for this topic
+    echo "$topic" | jq -c '.subscriptions[]' | while read -r subscription; do
+        sub_name=$(echo "$subscription" | jq -r '.name')
+        sub_type=$(echo "$subscription" | jq -r '.type // "pull"')
+        ack_deadline=$(echo "$subscription" | jq -r '.ackDeadlineSeconds // 10')
+        retention=$(echo "$subscription" | jq -r '.messageRetentionDuration // "604800s"')
+        
+        echo "Creating subscription: $sub_name for topic: $topic_name (type: $sub_type)"
+        
+        if [ "$sub_type" = "push" ]; then
+            push_endpoint=$(echo "$subscription" | jq -r '.pushEndpoint')
+            if [ -z "$push_endpoint" ]; then
+                echo "Error: pushEndpoint is required for push subscriptions"
+                continue
+            fi
+            
+            # For local development, we'll use service2's endpoint
+            local_endpoint="http://localhost:3001/notifications"
+            
+            echo "Creating push subscription with local endpoint: $local_endpoint"
+            curl -X PUT "http://localhost:8790/v1/projects/$PUBSUB_PROJECT_ID/subscriptions/$sub_name" \
+                -H "Content-Type: application/json" \
+                -d "{
+                    \"topic\": \"projects/$PUBSUB_PROJECT_ID/topics/$topic_name\",
+                    \"ackDeadlineSeconds\": $ack_deadline,
+                    \"messageRetentionDuration\": \"$retention\",
+                    \"pushConfig\": {
+                        \"pushEndpoint\": \"$local_endpoint\"
+                    }
+                }" || true
+        else
+            # Create pull subscription
+            curl -X PUT "http://localhost:8790/v1/projects/$PUBSUB_PROJECT_ID/subscriptions/$sub_name" \
+                -H "Content-Type: application/json" \
+                -d "{
+                    \"topic\": \"projects/$PUBSUB_PROJECT_ID/topics/$topic_name\",
+                    \"ackDeadlineSeconds\": $ack_deadline,
+                    \"messageRetentionDuration\": \"$retention\"
+                }" || true
+        fi
+    done
+done
 
 # Start CORS proxy for UI
 echo "Starting CORS proxy..."
@@ -57,6 +116,10 @@ echo "All services started! Use Ctrl+C to stop all services."
 echo "Publisher service: http://localhost:3000"
 echo "Subscriber service: http://localhost:3001"
 echo "UI: http://localhost:4200"
+echo ""
+echo "To test the system:"
+echo "1. Use Postman to send a POST request to http://localhost:3000/publish with body: {\"message\": \"Hello World\", \"topicName\": \"notifications\"}"
+echo "2. Check the console of service2 to see the received message"
 
 # Wait for any process to exit
 wait

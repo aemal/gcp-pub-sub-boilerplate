@@ -1,5 +1,13 @@
 # GCP PubSub Development Environment & A Minimalistic Boilerplate
 
+This repository is actually a monorepo that uses Git submodules to manage three separate components:
+
+1. `service1` (Publisher service) - A Git submodule
+2. `service2` (Subscriber service) - A Git submodule
+3. `pubsub-emulator-ui` (Web UI for monitoring) - A Git submodule
+
+The main repository (gcp-pub-sub-boilerplate) serves as a development environment and orchestration layer that brings these components together. 
+
 ## Initial Repository Setup
 
 ```bash
@@ -54,6 +62,10 @@ This project serves as a complete, production-ready development environment for 
   - Development scripts for quick setup
   - CORS proxy for UI development
   - Docker support for containerization
+- **Dynamic Configuration**:
+  - JSON-based configuration for topics and subscriptions
+  - Support for both pull and push subscriptions
+  - Easy to extend and modify
 
 ### Why This Project?
 
@@ -84,8 +96,49 @@ This repository contains a complete development environment for working with Goo
 - Google Cloud SDK (for Pub/Sub emulator)
 - Docker (optional, for containerization)
 - local-cors-proxy (for UI development)
+- jq (for JSON processing)
 
-## GCP Project Setup
+## Local Development
+
+### Starting the Development Environment
+
+```bash
+# Make the script executable
+chmod +x scripts/dev.sh
+
+# Start the development environment
+./scripts/dev.sh
+```
+
+This will:
+1. Start the Pub/Sub emulator
+2. Create topics and subscriptions from the configuration
+3. Start the publisher service (service1)
+4. Start the subscriber service (service2)
+5. Start the Pub/Sub emulator UI
+
+### Testing the Local Environment
+
+1. **Using Postman**:
+   - Send a POST request to `http://localhost:3000/publish` with body:
+     ```json
+     {
+       "message": "Hello World",
+       "topicName": "notifications"
+     }
+     ```
+   - Check the console of service2 to see the received message
+
+2. **Using the Pub/Sub Emulator UI**:
+   - Open `http://localhost:4200` in your browser
+   - Navigate to the "Publish" tab
+   - Select the topic "notifications"
+   - Enter a message and click "Publish"
+   - Check the console of service2 to see the received message
+
+## Production Deployment
+
+### Setting Up GCP Project
 
 1. Install Google Cloud SDK if you haven't already:
    ```bash
@@ -112,40 +165,120 @@ This repository contains a complete development environment for working with Goo
    gcloud config set project YOUR_PROJECT_ID
    ```
 
-5. Replace the default project ID in the following files:
+5. Enable required APIs:
    ```bash
-   # Current default: gcp-pubsub-456020
+   gcloud services enable \
+     run.googleapis.com \
+     pubsub.googleapis.com \
+     containerregistry.googleapis.com
+   ```
+
+### Setting Up Workload Identity Federation
+
+```bash
+# Create a Workload Identity Pool
+gcloud iam workload-identity-pools create "github-pool" \
+  --location="global" \
+  --display-name="GitHub Actions Pool"
+
+# Create a Workload Identity Provider
+gcloud iam workload-identity-pools providers create-oidc "github-provider" \
+  --location="global" \
+  --workload-identity-pool="github-pool" \
+  --display-name="GitHub provider" \
+  --attribute-mapping="google.subject=assertion.sub,attribute.actor=assertion.actor,attribute.repository=assertion.repository" \
+  --issuer-uri="https://token.actions.githubusercontent.com" \
+  --attribute-condition="attribute.repository=='aemal/gcp-pub-sub-boilerplate'"
+
+# Create service account
+gcloud iam service-accounts create "github-actions" \
+  --display-name="GitHub Actions service account"
+
+# Grant necessary roles
+gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
+  --member="serviceAccount:github-actions@YOUR_PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/run.admin"
+
+gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
+  --member="serviceAccount:github-actions@YOUR_PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/pubsub.admin"
+```
+
+### Deploying to GCP
+
+1. Add the Workload Identity Provider resource name to your GitHub repository secrets:
+   - `WIF_PROVIDER`: The Workload Identity Provider resource name (format: `projects/123456789/locations/global/workloadIdentityPools/github-pool/providers/github-provider`)
    
-   # service1/src/index.ts
-   const projectId = process.env.PUBSUB_PROJECT_ID || 'YOUR_PROJECT_ID';
-
-   # service2/src/index.ts
-   const projectId = process.env.PUBSUB_PROJECT_ID || 'YOUR_PROJECT_ID';
-
-   # pubsub-emulator-ui/webapp/src/environments/environment.ts
-   export const environment = {
-     production: false,
-     pubsubEmulator: {
-       host: 'http://localhost:8010',
-       projectId: 'YOUR_PROJECT_ID'
-     }
-   };
-
-   # pubsub-emulator-ui/webapp/src/environments/environment.prod.ts
-   export const environment = {
-     production: true,
-     pubsubEmulator: {
-       host: 'http://localhost:8010',
-       projectId: 'YOUR_PROJECT_ID'
-     }
-   };
-   ```
-
-   You can use this command to replace all occurrences:
+   You can get this value by running:
    ```bash
-   # macOS/Linux
-   find . -type f -exec sed -i '' 's/gcp-pubsub-456020/YOUR_PROJECT_ID/g' {} +
+   gcloud iam workload-identity-pools providers describe "github-provider" \
+     --location="global" \
+     --workload-identity-pool="github-pool" \
+     --format="value(name)"
    ```
+
+2. Push your code to GitHub:
+   ```bash
+   git add .
+   git commit -m "Update configuration and deployment scripts"
+   git push origin main
+   ```
+
+3. The GitHub Actions workflows will automatically:
+   - Deploy the Pub/Sub infrastructure
+   - Deploy service1 to Cloud Run
+   - Deploy service2 to Cloud Run
+
+### Testing the Production Environment
+
+1. **Using Postman**:
+   - Send a POST request to the Cloud Run URL of service1 (e.g., `https://pubsub-publisher-xxxxx-uc.a.run.app/publish`) with body:
+     ```json
+     {
+       "message": "Hello World",
+       "topicName": "notifications"
+     }
+     ```
+   - Check the Cloud Run logs of service2 to see the received message
+
+## Pub/Sub Configuration
+
+The Pub/Sub configuration is defined in `config/pubsub-config.json`. This file contains:
+
+- Topics
+- Subscriptions (both pull and push)
+- Subscription settings (ackDeadlineSeconds, messageRetentionDuration)
+
+Example configuration:
+```json
+{
+  "topics": [
+    {
+      "name": "my-topic",
+      "subscriptions": [
+        {
+          "name": "my-subscription",
+          "type": "pull",
+          "ackDeadlineSeconds": 10,
+          "messageRetentionDuration": "604800s"
+        }
+      ]
+    },
+    {
+      "name": "notifications",
+      "subscriptions": [
+        {
+          "name": "email-notifications",
+          "type": "push",
+          "pushEndpoint": "https://email-service-xxxxx-uc.a.run.app/notifications",
+          "ackDeadlineSeconds": 30,
+          "messageRetentionDuration": "2592000s"
+        }
+      ]
+    }
+  ]
+}
+```
 
 ## Environment Variables
 
@@ -170,6 +303,10 @@ PUBSUB_SUBSCRIPTION_NAME=my-subscription  # Default subscription name
    - Verify your project ID in all configuration files
    - Ensure you have the correct permissions in GCP
    - Check if the project ID is properly set in gcloud config
+5. **Push Subscription Issues**:
+   - Ensure the push endpoint is accessible from GCP
+   - Check that the service account has the necessary permissions
+   - Verify that the endpoint returns a 2xx status code
 
 ## Repository Structure
 
@@ -177,9 +314,11 @@ This project uses Git submodules to manage its components. The structure is:
 
 ```
 pubsub/
-├── service1/                 # Publisher service
+├── config/                  # Pub/Sub configuration
+├── scripts/                 # Development and deployment scripts
+├── service1/                # Publisher service
 ├── service2/                # Subscriber service
-└── pubsub-emulator-ui/     # Web UI for monitoring
+└── pubsub-emulator-ui/      # Web UI for monitoring
 ```
 
 ## Updating Submodules
