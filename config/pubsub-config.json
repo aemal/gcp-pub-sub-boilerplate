@@ -6,12 +6,13 @@
         {
           "name": "top5-sub1",
           "type": "push",
-          "pushEndpoint": "http://localhost:3001/top5sub1",
+          "pushEndpoint": "http://host.docker.internal:3001/example",
           "ackDeadlineSeconds": 30,
-          "messageRetentionDuration": "2592000s",
+          "messageRetentionDuration": "86400s",
           "pushConfig": {
             "attributes": {
-              "x-goog-version": "v1"
+              "x-goog-version": "v1",
+              "x-goog-verify-token": "test-token"
             }
           }
         }
@@ -24,7 +25,7 @@
           "name": "my-subscription",
           "type": "pull",
           "ackDeadlineSeconds": 10,
-          "messageRetentionDuration": "604800s"
+          "messageRetentionDuration": "86400s"
         }
       ]
     },
@@ -36,7 +37,7 @@
           "type": "push",
           "pushEndpoint": "https://email-service-xxxxx-uc.a.run.app/notifications",
           "ackDeadlineSeconds": 30,
-          "messageRetentionDuration": "2592000s",
+          "messageRetentionDuration": "86400s",
           "pushConfig": {
             "attributes": {
               "x-goog-version": "v1"
@@ -48,7 +49,7 @@
           "type": "push",
           "pushEndpoint": "https://push-service-xxxxx-uc.a.run.app/notifications",
           "ackDeadlineSeconds": 20,
-          "messageRetentionDuration": "604800s"
+          "messageRetentionDuration": "86400s"
         }
       ]
     }

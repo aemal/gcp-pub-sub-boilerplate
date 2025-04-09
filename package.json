@@ -1,0 +1,21 @@
+{
+  "name": "pubsub",
+  "version": "1.0.0",
+  "description": "PubSub service with Fastify",
+  "main": "src/index.ts",
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "dev": "bun --watch run src/index.ts",
+    "build": "bun build src/index.ts --outdir dist",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@fastify/cors": "^8.4.1",
+    "@google-cloud/pubsub": "^4.0.0",
+    "fastify": "^4.24.3"
+  },
+  "devDependencies": {
+    "bun-types": "latest"
+  }
+} 
