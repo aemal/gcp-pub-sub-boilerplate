@@ -53,58 +53,79 @@ console.log('PubSub initialized with:', {
 });
 
 // Initialize topics and subscriptions from config
-async function initializeFromConfig() {
+async function initializePubSub() {
   try {
-    console.log('Loaded Pub/Sub configuration:', pubsubConfig);
-    
-    for (const topicConfig of pubsubConfig.topics) {
-      const topic = await ensureTopic(topicConfig.name);
-      
-      for (const subConfig of topicConfig.subscriptions) {
-        console.log(`Creating subscription ${subConfig.name} for topic ${topicConfig.name}...`);
-        
-        const options: CreateSubscriptionOptions = {
-          ackDeadlineSeconds: subConfig.ackDeadlineSeconds,
-          messageRetentionDuration: {
-            seconds: parseInt(subConfig.messageRetentionDuration.replace('s', ''))
-          }
-        };
-        
-        if (subConfig.type === 'push' && subConfig.pushEndpoint) {
-          console.log('Setting push config:', {
-            pushEndpoint: subConfig.pushEndpoint,
-            attributes: subConfig.pushConfig?.attributes
-          });
-          options.pushConfig = {
-            pushEndpoint: subConfig.pushEndpoint,
-            attributes: subConfig.pushConfig?.attributes || {}
-          };
-        }
-        
-        try {
-          await topic.createSubscription(subConfig.name, options);
-          console.log(`Subscription ${subConfig.name} created successfully with options:`, options);
+    // Initialize PubSub client
+    const pubsub = new PubSub({
+      projectId: process.env.PROJECT_ID,
+      apiEndpoint: process.env.PUBSUB_EMULATOR_HOST,
+    });
 
-          // Verify subscription configuration
-          if (subConfig.type === 'push') {
-            const [subscription] = await topic.subscription(subConfig.name).get();
-            console.log('Subscription details:', {
-              name: subscription.name,
-              pushEndpoint: subscription.metadata?.pushConfig?.pushEndpoint,
-              pushConfig: subscription.metadata?.pushConfig,
-              fullMetadata: subscription.metadata
-            });
+    // Load configuration
+    const config = JSON.parse(
+      fs.readFileSync(path.join(__dirname, "../config/pubsub-config.json"), "utf8")
+    );
+
+    console.log("Loaded Pub/Sub configuration:", JSON.stringify(config, null, 2));
+
+    // Create topics and subscriptions
+    for (const topicConfig of config.topics) {
+      const topicName = topicConfig.name;
+      const topic = pubsub.topic(topicName);
+
+      // Check if topic exists
+      const [topicExists] = await topic.exists();
+      if (!topicExists) {
+        console.log(`Topic ${topicName} does not exist, creating it...`);
+        await topic.create();
+        console.log(`Topic ${topicName} created successfully`);
+      }
+
+      // Create subscriptions
+      console.log(
+        `Topic ${topicName} has ${topicConfig.subscriptions.length} subscriptions:`,
+        topicConfig.subscriptions.map((sub: { name: string }) => sub.name)
+      );
+
+      for (const subConfig of topicConfig.subscriptions) {
+        const subName = subConfig.name;
+
+        // Check if subscription exists
+        const subscription = topic.subscription(subName);
+        const [subExists] = await subscription.exists();
+
+        if (!subExists) {
+          console.log(`Creating subscription ${subName} for topic ${topicName}...`);
+          const options: CreateSubscriptionOptions = {
+            topic: topicName,
+            ackDeadlineSeconds: subConfig.ackDeadlineSeconds,
+            messageRetentionDuration: {
+              seconds: parseInt(subConfig.messageRetentionDuration),
+            },
+          };
+
+          if (subConfig.type === "push" && subConfig.pushEndpoint) {
+            options.pushConfig = {
+              pushEndpoint: subConfig.pushEndpoint,
+              attributes: subConfig.pushConfig?.attributes || {},
+            };
           }
-        } catch (error) {
-          console.error(`Error creating subscription ${subConfig.name}:`, error);
+
+          await topic.createSubscription(subName, options);
+          console.log(
+            `Subscription ${subName} created successfully with options:`,
+            JSON.stringify(options, null, 2)
+          );
+        } else {
+          console.log(`Subscription ${subName} already exists, skipping creation`);
         }
       }
     }
-    
-    console.log('PubSub configuration initialized successfully');
+
+    console.log("PubSub configuration initialized successfully");
   } catch (error) {
-    console.error('Error initializing PubSub configuration:', error);
-    throw error;
+    console.error("Error initializing PubSub:", error);
+    process.exit(1);
   }
 }
 
@@ -121,9 +142,20 @@ try {
 }
 
 // Initialize PubSub configuration after loading
-await initializeFromConfig();
+await initializePubSub();
 
-// Ensure topic exists
+// Add this function to sync changes to GCP
+async function syncToGCP() {
+  try {
+    const { execSync } = require('child_process');
+    console.log('Syncing changes to GCP...');
+    execSync('make sync-to-gcp', { stdio: 'inherit' });
+  } catch (error) {
+    console.error('Error syncing to GCP:', error);
+  }
+}
+
+// Modify the ensureTopic function to sync after creation
 async function ensureTopic(topicName: string): Promise<Topic> {
   const topic = pubsub.topic(topicName);
   const [exists] = await topic.exists();
@@ -132,6 +164,7 @@ async function ensureTopic(topicName: string): Promise<Topic> {
     console.log(`Topic ${topicName} does not exist, creating it...`);
     await topic.create();
     console.log(`Topic ${topicName} created successfully`);
+    await syncToGCP(); // Sync to GCP after creating topic
   } else {
     console.log(`Topic ${topicName} already exists`);
   }
@@ -151,7 +184,7 @@ app.get('/health', async () => {
   return { status: 'ok' };
 });
 
-// Publish message endpoint
+// Modify the publish endpoint to sync after publishing
 app.post('/publish', async (request, reply) => {
   try {
     const { message, topicName = 'my-topic' } = request.body as { message: string, topicName?: string };
@@ -160,7 +193,6 @@ app.post('/publish', async (request, reply) => {
       return reply.code(400).send({ error: 'Message is required' });
     }
 
-    // Create a properly formatted message for PubSub
     const messageData = {
       message: message,
       timestamp: new Date().toISOString()
@@ -191,7 +223,6 @@ app.post('/publish', async (request, reply) => {
         fullMetadata: subDetails.metadata
       });
 
-      // Add logging for push subscription
       if (subDetails.metadata?.pushConfig?.pushEndpoint) {
         console.log('This is a push subscription. The emulator should attempt to push to:', subDetails.metadata.pushConfig.pushEndpoint);
         console.log('Push config:', {
@@ -202,21 +233,13 @@ app.post('/publish', async (request, reply) => {
       }
     }
 
-    // Add a small delay to allow the emulator to process the message
     await new Promise(resolve => setTimeout(resolve, 1000));
+    await syncToGCP(); // Sync to GCP after publishing
 
     return { messageId, topic: topicName };
-  } catch (error: unknown) {
-    if (error instanceof Error) {
-      console.error('Detailed publish error:', {
-        error: error.message,
-        code: (error as any).code,
-        details: (error as any).details,
-        stack: error.stack
-      });
-      return reply.code(500).send({ error: 'Failed to publish message', details: error.message });
-    }
-    return reply.code(500).send({ error: 'Failed to publish message' });
+  } catch (error) {
+    console.error('Error publishing message:', error);
+    return reply.code(500).send({ error: 'Internal server error' });
   }
 });
 
