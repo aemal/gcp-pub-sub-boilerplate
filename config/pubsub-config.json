@@ -1,5 +1,16 @@
-{"topics": [
-    {"name": "my-topic","subscriptions": [
-        {"name":"my-subscription","type":"pull","pushEndpoint":"","ackDeadlineSeconds":10,"messageRetentionDuration":"604800s"}
-      ]}
-  ]}
+{
+  "topics": [
+    {
+      "name": "my-topic",
+      "subscriptions": [
+        {
+          "name": "my-subscription",
+          "type": "pull",
+          "pushEndpoint": "",
+          "ackDeadlineSeconds": 10,
+          "messageRetentionDuration": "604800s"
+        }
+      ]
+    }
+  ]
+}

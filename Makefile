@@ -61,17 +61,17 @@ sync-from-gcp:
 	@echo "Fetching topics from GCP..."
 	@TOPICS=$$(gcloud pubsub topics list --project="$(PROJECT_ID)" --format="value(name)"); \
 	echo "Found topics: $$TOPICS"; \
-	echo '{"topics": [' > config/pubsub-config.json.tmp; \
+	JSON_OUTPUT='{"topics": ['; \
 	FIRST_TOPIC=true; \
 	for TOPIC in $$TOPICS; do \
 		echo "Processing topic: $$TOPIC"; \
 		if [ "$$FIRST_TOPIC" = false ]; then \
-			echo "," >> config/pubsub-config.json.tmp; \
+			JSON_OUTPUT="$$JSON_OUTPUT,"; \
 		fi; \
 		FIRST_TOPIC=false; \
 		TOPIC_NAME=$$(basename "$$TOPIC"); \
 		echo "Topic name: $$TOPIC_NAME"; \
-		echo "    {\"name\": \"$$TOPIC_NAME\",\"subscriptions\": [" >> config/pubsub-config.json.tmp; \
+		JSON_OUTPUT="$$JSON_OUTPUT{\"name\": \"$$TOPIC_NAME\",\"subscriptions\": ["; \
 		echo "Fetching subscriptions for topic $$TOPIC..."; \
 		ACCESS_TOKEN=$$(gcloud auth print-access-token); \
 		SUBSCRIPTIONS=$$(curl -s -H "Authorization: Bearer $$ACCESS_TOKEN" \
@@ -86,7 +86,7 @@ sync-from-gcp:
 			for SUB in $$SUBSCRIPTIONS; do \
 				echo "Processing subscription: $$SUB"; \
 				if [ "$$FIRST_SUB" = false ]; then \
-					echo "," >> config/pubsub-config.json.tmp; \
+					JSON_OUTPUT="$$JSON_OUTPUT,"; \
 				fi; \
 				FIRST_SUB=false; \
 				SUB_NAME=$$(basename "$$SUB"); \
@@ -96,7 +96,7 @@ sync-from-gcp:
 					"https://pubsub.googleapis.com/v1/projects/$(PROJECT_ID)/subscriptions/$$SUB_NAME"); \
 				echo "Raw subscription details: $$SUB_DETAILS"; \
 				PUSH_ENDPOINT=$$(echo "$$SUB_DETAILS" | jq -r '.pushConfig.pushEndpoint // empty'); \
-				PUSH_ATTRIBUTES=$$(echo "$$SUB_DETAILS" | jq -r '.pushConfig.attributes // empty'); \
+				PUSH_ATTRIBUTES=$$(echo "$$SUB_DETAILS" | jq -r '.pushConfig.attributes // {}'); \
 				ACK_DEADLINE=$$(echo "$$SUB_DETAILS" | jq -r '.ackDeadlineSeconds // 10'); \
 				RETENTION=$$(echo "$$SUB_DETAILS" | jq -r '.messageRetentionDuration // "604800s"'); \
 				echo "Push endpoint: $$PUSH_ENDPOINT"; \
@@ -111,14 +111,16 @@ sync-from-gcp:
 					PUSH_CONFIG=""; \
 				fi; \
 				echo "Subscription type: $$SUB_TYPE"; \
-				echo "Writing subscription to config: {\"name\":\"$$SUB_NAME\",\"type\":\"$$SUB_TYPE\",\"pushEndpoint\":\"$$PUSH_ENDPOINT\",\"ackDeadlineSeconds\":$$ACK_DEADLINE,\"messageRetentionDuration\":\"$$RETENTION\"$$PUSH_CONFIG}"; \
-				echo "        {\"name\":\"$$SUB_NAME\",\"type\":\"$$SUB_TYPE\",\"pushEndpoint\":\"$$PUSH_ENDPOINT\",\"ackDeadlineSeconds\":$$ACK_DEADLINE,\"messageRetentionDuration\":\"$$RETENTION\"$$PUSH_CONFIG}" >> config/pubsub-config.json.tmp; \
+				SUB_JSON="{\"name\":\"$$SUB_NAME\",\"type\":\"$$SUB_TYPE\",\"pushEndpoint\":\"$$PUSH_ENDPOINT\",\"ackDeadlineSeconds\":$$ACK_DEADLINE,\"messageRetentionDuration\":\"$$RETENTION\"$$PUSH_CONFIG}"; \
+				echo "Writing subscription to config: $$SUB_JSON"; \
+				JSON_OUTPUT="$$JSON_OUTPUT$$SUB_JSON"; \
 			done; \
 		fi; \
-		echo "      ]}" >> config/pubsub-config.json.tmp; \
+		JSON_OUTPUT="$$JSON_OUTPUT]}"; \
 	done; \
-	echo "  ]}" >> config/pubsub-config.json.tmp; \
-	mv config/pubsub-config.json.tmp config/pubsub-config.json; \
+	JSON_OUTPUT="$$JSON_OUTPUT]}"; \
+	echo "Final JSON before formatting: $$JSON_OUTPUT"; \
+	echo "$$JSON_OUTPUT" | jq '.' > config/pubsub-config.json; \
 	echo "Successfully synced Pub/Sub configuration from GCP to config/pubsub-config.json"
 
 sync-to-gcp:
@@ -132,44 +134,49 @@ sync-to-gcp:
 		echo "Error: config/pubsub-config.json not found"; \
 		exit 1; \
 	fi
-	@CONFIG=$$(cat config/pubsub-config.json); \
-	GCP_TOPICS=$$(gcloud pubsub topics list --project="$(PROJECT_ID)" --format="value(name)"); \
+	@CONFIG=`cat config/pubsub-config.json`; \
+	GCP_TOPICS=`gcloud pubsub topics list --project="$(PROJECT_ID)" --format="value(name)"`; \
+	ACCESS_TOKEN=`gcloud auth print-access-token`; \
 	echo "$$CONFIG" | jq -r '.topics[] | .name' | while read -r TOPIC_NAME; do \
+		echo "--- Processing Topic: $$TOPIC_NAME ---"; \
 		TOPIC_PATH="projects/$(PROJECT_ID)/topics/$$TOPIC_NAME"; \
-		if ! echo "$$GCP_TOPICS" | grep -q "$$TOPIC_PATH"; then \
+		if ! echo "$$GCP_TOPICS" | grep -qF "$$TOPIC_PATH"; then \
 			echo "Creating topic: $$TOPIC_NAME"; \
-			gcloud pubsub topics create "$$TOPIC_NAME" --project="$(PROJECT_ID)"; \
+			gcloud pubsub topics create "$$TOPIC_NAME" --project="$(PROJECT_ID)" || true; \
+		else \
+			echo "Topic $$TOPIC_NAME already exists, skipping creation"; \
 		fi; \
-		GCP_SUBS=$$(gcloud pubsub topics list-subscriptions "$$TOPIC_PATH" --project="$(PROJECT_ID)" --format="value(name)"); \
-		echo "$$CONFIG" | jq -r --arg topic "$$TOPIC_NAME" '.topics[] | select(.name == $$topic) | .subscriptions[] | .name' | while read -r SUB_NAME; do \
+		_DEBUG_GCP_SUBS_JSON=`curl -s -H "Authorization: Bearer $$ACCESS_TOKEN" \
+			"https://pubsub.googleapis.com/v1/projects/$(PROJECT_ID)/topics/$$TOPIC_NAME/subscriptions"`; \
+		echo "--> DEBUG: Direct curl JSON output for $$TOPIC_NAME: [$$_DEBUG_GCP_SUBS_JSON]"; \
+		GCP_SUBS=`echo "$$_DEBUG_GCP_SUBS_JSON" | jq -r '.subscriptions[]? // empty'`; \
+		echo "--> GCP Subscriptions for topic $$TOPIC_NAME (from REST): [$$GCP_SUBS]"; \
+		LOCAL_SUB_NAMES=`echo "$$CONFIG" | jq -r --arg topic "$$TOPIC_NAME" '.topics[] | select(.name == $$topic) | .subscriptions[] | .name'`; \
+		for SUB_NAME in $$LOCAL_SUB_NAMES; do \
+			echo "  --> Processing Local SUB_NAME: [$$SUB_NAME]"; \
 			SUB_PATH="projects/$(PROJECT_ID)/subscriptions/$$SUB_NAME"; \
-			if ! echo "$$GCP_SUBS" | grep -q "$$SUB_PATH"; then \
-				echo "Creating subscription: $$SUB_NAME"; \
-				SUB_CONFIG=$$(echo "$$CONFIG" | jq -r --arg topic "$$TOPIC_NAME" --arg sub "$$SUB_NAME" '.topics[] | select(.name == $$topic) | .subscriptions[] | select(.name == $$sub)'); \
+			echo "  --> Checking existence for SUB_PATH: [$$SUB_PATH]"; \
+			if ! echo "$$GCP_SUBS" | grep -qxF "$$SUB_PATH"; then \
+				echo "  Creating subscription: $$SUB_NAME for topic $$TOPIC_NAME"; \
+				SUB_CONFIG=`echo "$$CONFIG" | jq -r --arg topic "$$TOPIC_NAME" --arg sub "$$SUB_NAME" '.topics[] | select(.name == $$topic) | .subscriptions[] | select(.name == $$sub)'`; \
 				CMD="gcloud pubsub subscriptions create $$SUB_NAME --topic=$$TOPIC_NAME --project=$(PROJECT_ID)"; \
-				PUSH_ENDPOINT=$$(echo "$$SUB_CONFIG" | jq -r '.pushEndpoint // empty'); \
-				if [ -n "$$PUSH_ENDPOINT" ] && [ "$$PUSH_ENDPOINT" != "null" ]; then \
+				PUSH_ENDPOINT=`echo "$$SUB_CONFIG" | jq -r '.pushEndpoint // empty'`; \
+				if [ -n "$$PUSH_ENDPOINT" ] && [ "$$PUSH_ENDPOINT" != "null" ] && [ "$$PUSH_ENDPOINT" != "{}" ]; then \
 					CMD="$$CMD --push-endpoint=$$PUSH_ENDPOINT"; \
-					PUSH_ATTRS=$$(echo "$$SUB_CONFIG" | jq -r '.pushConfig.attributes // empty'); \
-					if [ "$$PUSH_ATTRS" != "null" ]; then \
+					PUSH_ATTRS=`echo "$$SUB_CONFIG" | jq -r '.pushConfig.attributes // empty'`; \
+					if [ -n "$$PUSH_ATTRS" ] && [ "$$PUSH_ATTRS" != "null" ] && [ "$$PUSH_ATTRS" != "{}" ]; then \
 						CMD="$$CMD --push-attributes=$$PUSH_ATTRS"; \
 					fi; \
 				fi; \
-				ACK_DEADLINE=$$(echo "$$SUB_CONFIG" | jq -r '.ackDeadlineSeconds'); \
-				RETENTION=$$(echo "$$SUB_CONFIG" | jq -r '.messageRetentionDuration'); \
+				ACK_DEADLINE=`echo "$$SUB_CONFIG" | jq -r '.ackDeadlineSeconds // 10'`; \
+				RETENTION=`echo "$$SUB_CONFIG" | jq -r '.messageRetentionDuration // "604800s"'`; \
 				CMD="$$CMD --ack-deadline=$$ACK_DEADLINE --message-retention-duration=$$RETENTION"; \
 				eval "$$CMD" || true; \
 			else \
-				echo "Subscription $$SUB_NAME already exists, skipping creation"; \
-			fi; \
+				echo "  Subscription $$SUB_NAME already exists in GCP, skipping creation"; \
+			fi \
 		done; \
-	done; \
-	echo "$$GCP_TOPICS" | while read -r GCP_TOPIC; do \
-		TOPIC_NAME=$$(basename "$$GCP_TOPIC"); \
-		if ! echo "$$CONFIG" | jq -r '.topics[] | .name' | grep -q "^$$TOPIC_NAME$$"; then \
-			echo "Deleting topic: $$TOPIC_NAME"; \
-			gcloud pubsub topics delete "$$TOPIC_NAME" --project="$(PROJECT_ID)"; \
-		fi; \
+		echo "--- Finished processing topic $$TOPIC_NAME ---"; \
 	done
 	@echo "Successfully synced local configuration to GCP Pub/Sub"
 
