@@ -1,6 +1,6 @@
 import fastify from 'fastify';
 import cors from '@fastify/cors';
-import { PubSub } from '@google-cloud/pubsub';
+import { PubSub, Topic, SubscriptionOptions, CreateSubscriptionOptions } from '@google-cloud/pubsub';
 import fs from 'fs';
 import path from 'path';
 
@@ -55,33 +55,33 @@ console.log('PubSub initialized with:', {
 // Initialize topics and subscriptions from config
 async function initializeFromConfig() {
   try {
+    console.log('Loaded Pub/Sub configuration:', pubsubConfig);
+    
     for (const topicConfig of pubsubConfig.topics) {
       const topic = await ensureTopic(topicConfig.name);
       
       for (const subConfig of topicConfig.subscriptions) {
-        const subscription = topic.subscription(subConfig.name);
-        const [exists] = await subscription.exists();
+        console.log(`Creating subscription ${subConfig.name} for topic ${topicConfig.name}...`);
         
-        if (!exists) {
-          console.log(`Creating subscription ${subConfig.name} for topic ${topicConfig.name}...`);
-          const options: any = {
-            ackDeadlineSeconds: subConfig.ackDeadlineSeconds,
-            messageRetentionDuration: {
-              seconds: parseInt(subConfig.messageRetentionDuration.replace('s', ''))
-            }
-          };
-          
-          if (subConfig.type === 'push' && subConfig.pushEndpoint) {
-            console.log('Setting push config:', {
-              pushEndpoint: subConfig.pushEndpoint,
-              attributes: subConfig.pushConfig?.attributes
-            });
-            options.pushConfig = {
-              pushEndpoint: subConfig.pushEndpoint,
-              attributes: subConfig.pushConfig?.attributes || {}
-            };
+        const options: CreateSubscriptionOptions = {
+          ackDeadlineSeconds: subConfig.ackDeadlineSeconds,
+          messageRetentionDuration: {
+            seconds: parseInt(subConfig.messageRetentionDuration.replace('s', ''))
           }
-          
+        };
+        
+        if (subConfig.type === 'push' && subConfig.pushEndpoint) {
+          console.log('Setting push config:', {
+            pushEndpoint: subConfig.pushEndpoint,
+            attributes: subConfig.pushConfig?.attributes
+          });
+          options.pushConfig = {
+            pushEndpoint: subConfig.pushEndpoint,
+            attributes: subConfig.pushConfig?.attributes || {}
+          };
+        }
+        
+        try {
           await topic.createSubscription(subConfig.name, options);
           console.log(`Subscription ${subConfig.name} created successfully with options:`, options);
 
@@ -95,12 +95,16 @@ async function initializeFromConfig() {
               fullMetadata: subscription.metadata
             });
           }
+        } catch (error) {
+          console.error(`Error creating subscription ${subConfig.name}:`, error);
         }
       }
     }
+    
     console.log('PubSub configuration initialized successfully');
-  } catch (error: unknown) {
+  } catch (error) {
     console.error('Error initializing PubSub configuration:', error);
+    throw error;
   }
 }
 
@@ -120,14 +124,25 @@ try {
 await initializeFromConfig();
 
 // Ensure topic exists
-async function ensureTopic(topicName: string) {
+async function ensureTopic(topicName: string): Promise<Topic> {
   const topic = pubsub.topic(topicName);
   const [exists] = await topic.exists();
+  
   if (!exists) {
     console.log(`Topic ${topicName} does not exist, creating it...`);
-    await pubsub.createTopic(topicName);
+    await topic.create();
     console.log(`Topic ${topicName} created successfully`);
+  } else {
+    console.log(`Topic ${topicName} already exists`);
   }
+
+  // Get and log all subscriptions for this topic
+  const [subscriptions] = await topic.getSubscriptions();
+  console.log(`Topic ${topicName} has ${subscriptions.length} subscriptions:`, subscriptions.map(sub => ({
+    name: sub.name,
+    pushEndpoint: (sub.metadata as any)?.pushConfig?.pushEndpoint
+  })));
+
   return topic;
 }
 
