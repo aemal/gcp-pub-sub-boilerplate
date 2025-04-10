@@ -1,0 +1,12 @@
+{
+  "ref": "refs/heads/main",
+  "repository": {
+    "full_name": "aemal/gcp-pub-sub-boilerplate",
+    "owner": {
+      "login": "aemal"
+    }
+  },
+  "pusher": {
+    "name": "aemal"
+  }
+} 

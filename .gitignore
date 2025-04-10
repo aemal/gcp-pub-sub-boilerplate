@@ -63,3 +63,5 @@ connect.lock
 libpeerconnection.log
 testem.log
 /typings
+
+.secrets

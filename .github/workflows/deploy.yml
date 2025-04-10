@@ -8,8 +8,7 @@ on:
 env:
   PROJECT_ID: gcp-pubsub-456020
   REGION: us-central1
-  PUBLISHER_SERVICE: pubsub-publisher
-  SUBSCRIBER_SERVICE: pubsub-subscriber
+  SERVICE_NAME: pubsub-service
 
 jobs:
   deploy:
@@ -32,27 +31,13 @@ jobs:
     - name: Configure Docker
       run: gcloud auth configure-docker
 
-    # Deploy Publisher Service
-    - name: Build and Deploy Publisher
-      working-directory: ./service1
+    # Deploy Service
+    - name: Build and Deploy Service
       run: |
-        docker build -t gcr.io/$PROJECT_ID/$PUBLISHER_SERVICE:${{ github.sha }} .
-        docker push gcr.io/$PROJECT_ID/$PUBLISHER_SERVICE:${{ github.sha }}
-        gcloud run deploy $PUBLISHER_SERVICE \
-          --image gcr.io/$PROJECT_ID/$PUBLISHER_SERVICE:${{ github.sha }} \
-          --region $REGION \
-          --platform managed \
-          --allow-unauthenticated \
-          --set-env-vars="PUBSUB_PROJECT_ID=$PROJECT_ID"
-
-    # Deploy Subscriber Service
-    - name: Build and Deploy Subscriber
-      working-directory: ./service2
-      run: |
-        docker build -t gcr.io/$PROJECT_ID/$SUBSCRIBER_SERVICE:${{ github.sha }} .
-        docker push gcr.io/$PROJECT_ID/$SUBSCRIBER_SERVICE:${{ github.sha }}
-        gcloud run deploy $SUBSCRIBER_SERVICE \
-          --image gcr.io/$PROJECT_ID/$SUBSCRIBER_SERVICE:${{ github.sha }} \
+        docker build -t gcr.io/$PROJECT_ID/$SERVICE_NAME:${{ github.sha }} -f ./Dockerfile .
+        docker push gcr.io/$PROJECT_ID/$SERVICE_NAME:${{ github.sha }}
+        gcloud run deploy $SERVICE_NAME \
+          --image gcr.io/$PROJECT_ID/$SERVICE_NAME:${{ github.sha }} \
           --region $REGION \
           --platform managed \
           --allow-unauthenticated \
