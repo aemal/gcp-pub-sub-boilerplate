@@ -193,4 +193,80 @@ If you encounter issues:
 
 ## License
 
-MIT 
+MIT
+
+## Usage
+
+### Development Environment
+
+To start the development environment:
+
+```bash
+make dev
+```
+
+This will:
+1. Check if Docker is running
+2. Check if the local config has been modified
+3. Start the Pub/Sub emulator
+4. Sync the configuration to GCP
+5. Start the services
+
+### Environment-Specific Deployment
+
+You can configure your Pub/Sub subscriptions with different endpoints for different environments (development, staging, production) using environment-specific properties in your `config/pubsub-config.json` file:
+
+```json
+{
+  "name": "my-subscription",
+  "type": "push",
+  "pushEndpointDev": "http://host.docker.internal:3001/example",
+  "pushEndpointStaging": "https://staging-api.example.com/example",
+  "pushEndpointProd": "https://api.example.com/example",
+  "ackDeadlineSeconds": 10,
+  "messageRetentionDuration": "604800s"
+}
+```
+
+Then use the `ENV` variable when syncing to specify which environment's endpoints to use:
+
+```bash
+# Development (default)
+make sync-to-gcp ENV=dev
+
+# Staging
+make sync-to-gcp ENV=staging
+
+# Production
+make sync-to-gcp ENV=prod
+```
+
+Each environment uses a different base URL for local push endpoints:
+- Development: https://example.com
+- Staging: https://staging-api.example.com
+- Production: https://api.example.com
+
+For remote endpoints, the system will use the exact URL specified in the environment-specific property.
+
+You can customize the base URLs in the Makefile by modifying these variables:
+```make
+DEV_BASE_URL := https://example.com
+STAGING_BASE_URL := https://staging-api.example.com
+PROD_BASE_URL := https://api.example.com
+```
+
+### Force Sync
+
+To force sync from GCP (overwriting local changes):
+
+```bash
+make dev-force-sync
+```
+
+### Clean Up
+
+To clean up the environment:
+
+```bash
+make clean
+``` 

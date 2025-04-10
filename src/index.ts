@@ -234,7 +234,7 @@ app.post('/publish', async (request, reply) => {
     }
 
     await new Promise(resolve => setTimeout(resolve, 1000));
-    await syncToGCP(); // Sync to GCP after publishing
+    // await syncToGCP(); // Sync to GCP after publishing - Commented out to avoid expected errors during local dev
 
     return { messageId, topic: topicName };
   } catch (error) {

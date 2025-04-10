@@ -1,4 +1,39 @@
-.PHONY: dev clean check-docker start-emulator sync-from-gcp sync-to-gcp
+# Default environment is 'dev'
+ENV ?= dev
+
+# Check and set appropriate environment based on PROJECT_ID if ENV not explicitly set
+define detect_environment
+	@if [ "$(ENV)" = "dev" ] && [ -n "$(PROJECT_ID)" ]; then \
+		if echo "$(PROJECT_ID)" | grep -q "prod"; then \
+			echo "Detected production project ID, setting ENV=prod"; \
+			ENV=prod; \
+		elif echo "$(PROJECT_ID)" | grep -q "staging"; then \
+			echo "Detected staging project ID, setting ENV=staging"; \
+			ENV=staging; \
+		else \
+			echo "Using default environment: dev"; \
+		fi; \
+	fi
+endef
+
+# Environment-specific base URLs
+DEV_BASE_URL := https://example.com
+STAGING_BASE_URL := https://staging-api.example.com
+PROD_BASE_URL := https://api.example.com
+
+# Set the base URL based on the environment
+ifeq ($(ENV),dev)
+	BASE_URL := $(DEV_BASE_URL)
+else ifeq ($(ENV),staging)
+	BASE_URL := $(STAGING_BASE_URL)
+else ifeq ($(ENV),prod)
+	BASE_URL := $(PROD_BASE_URL)
+else
+	# Default to dev if an invalid environment is specified
+	BASE_URL := $(DEV_BASE_URL)
+endif
+
+.PHONY: dev clean check-docker start-emulator sync-from-gcp sync-to-gcp dev-force-sync
 
 # Source environment variables
 include .env
@@ -16,7 +51,34 @@ ifndef JQ
     $(error "jq is not installed. Please install jq.")
 endif
 
-dev: check-docker sync-from-gcp start-emulator
+# Check if local config has been modified
+check-local-config:
+	@if [ -f "config/pubsub-config.json" ]; then \
+		if git diff --quiet config/pubsub-config.json 2>/dev/null; then \
+			echo "Local config is unchanged, syncing from GCP..."; \
+			$(MAKE) sync-from-gcp; \
+		else \
+			echo "Local config has been modified, preserving changes..."; \
+		fi \
+	else \
+		echo "No local config found, syncing from GCP..."; \
+		$(MAKE) sync-from-gcp; \
+	fi
+
+# Default dev target: Preserves local config changes by default, then syncs to GCP
+dev: check-docker check-local-config start-emulator sync-to-gcp
+	pkill -f "bun.*src/index.ts" || true
+	pkill -f "bun.*service1/src/index.ts" || true
+	pkill -f "bun.*service2/src/index.ts" || true
+	bun install
+	cd service1 && bun install
+	cd service2 && bun install
+	bun run dev & \
+		cd service1 && bun run dev & \
+		cd service2 && bun run dev
+
+# New target: Explicitly sync from GCP first, overwriting local changes, then sync back
+dev-force-sync: check-docker sync-from-gcp start-emulator sync-to-gcp
 	pkill -f "bun.*src/index.ts" || true
 	pkill -f "bun.*service1/src/index.ts" || true
 	pkill -f "bun.*service2/src/index.ts" || true
@@ -106,12 +168,45 @@ sync-from-gcp:
 				if [ -n "$$PUSH_ENDPOINT" ] && [ "$$PUSH_ENDPOINT" != "null" ] && [ "$$PUSH_ENDPOINT" != "{}" ]; then \
 					SUB_TYPE="push"; \
 					PUSH_CONFIG=",\"pushConfig\":{\"attributes\":$$PUSH_ATTRIBUTES}"; \
+					
+					# Check if this subscription already exists in local config
+					if [ -f "config/pubsub-config.json" ]; then \
+						EXISTING_SUB_JSON=$$(cat config/pubsub-config.json | jq -r --arg topic "$$TOPIC_NAME" --arg sub "$$SUB_NAME" '.topics[] | select(.name == $$topic) | .subscriptions[] | select(.name == $$sub) // empty'); \
+						if [ -n "$$EXISTING_SUB_JSON" ]; then \
+							# Extract environment-specific endpoints if they exist
+							PUSH_DEV=$$(echo "$$EXISTING_SUB_JSON" | jq -r '.pushEndpointDev // empty'); \
+							PUSH_STAGING=$$(echo "$$EXISTING_SUB_JSON" | jq -r '.pushEndpointStaging // empty'); \
+							PUSH_PROD=$$(echo "$$EXISTING_SUB_JSON" | jq -r '.pushEndpointProd // empty'); \
+							
+							ENV_ENDPOINTS=""; \
+							if [ -n "$$PUSH_DEV" ] && [ "$$PUSH_DEV" != "null" ]; then \
+								ENV_ENDPOINTS="$$ENV_ENDPOINTS,\"pushEndpointDev\":\"$$PUSH_DEV\""; \
+							fi; \
+							if [ -n "$$PUSH_STAGING" ] && [ "$$PUSH_STAGING" != "null" ]; then \
+								ENV_ENDPOINTS="$$ENV_ENDPOINTS,\"pushEndpointStaging\":\"$$PUSH_STAGING\""; \
+							fi; \
+							if [ -n "$$PUSH_PROD" ] && [ "$$PUSH_PROD" != "null" ]; then \
+								ENV_ENDPOINTS="$$ENV_ENDPOINTS,\"pushEndpointProd\":\"$$PUSH_PROD\""; \
+							fi; \
+							
+							# If we found environment-specific endpoints, add them to the JSON
+							if [ -n "$$ENV_ENDPOINTS" ]; then \
+								SUB_JSON="{\"name\":\"$$SUB_NAME\",\"type\":\"$$SUB_TYPE\",\"pushEndpoint\":\"$$PUSH_ENDPOINT\",\"ackDeadlineSeconds\":$$ACK_DEADLINE,\"messageRetentionDuration\":\"$$RETENTION\"$$ENV_ENDPOINTS$$PUSH_CONFIG}"; \
+							else \
+								SUB_JSON="{\"name\":\"$$SUB_NAME\",\"type\":\"$$SUB_TYPE\",\"pushEndpoint\":\"$$PUSH_ENDPOINT\",\"ackDeadlineSeconds\":$$ACK_DEADLINE,\"messageRetentionDuration\":\"$$RETENTION\"$$PUSH_CONFIG}"; \
+							fi; \
+						else \
+							SUB_JSON="{\"name\":\"$$SUB_NAME\",\"type\":\"$$SUB_TYPE\",\"pushEndpoint\":\"$$PUSH_ENDPOINT\",\"ackDeadlineSeconds\":$$ACK_DEADLINE,\"messageRetentionDuration\":\"$$RETENTION\"$$PUSH_CONFIG}"; \
+						fi; \
+					else \
+						SUB_JSON="{\"name\":\"$$SUB_NAME\",\"type\":\"$$SUB_TYPE\",\"pushEndpoint\":\"$$PUSH_ENDPOINT\",\"ackDeadlineSeconds\":$$ACK_DEADLINE,\"messageRetentionDuration\":\"$$RETENTION\"$$PUSH_CONFIG}"; \
+					fi; \
 				else \
 					SUB_TYPE="pull"; \
 					PUSH_CONFIG=""; \
+					SUB_JSON="{\"name\":\"$$SUB_NAME\",\"type\":\"$$SUB_TYPE\",\"ackDeadlineSeconds\":$$ACK_DEADLINE,\"messageRetentionDuration\":\"$$RETENTION\"$$PUSH_CONFIG}"; \
 				fi; \
 				echo "Subscription type: $$SUB_TYPE"; \
-				SUB_JSON="{\"name\":\"$$SUB_NAME\",\"type\":\"$$SUB_TYPE\",\"pushEndpoint\":\"$$PUSH_ENDPOINT\",\"ackDeadlineSeconds\":$$ACK_DEADLINE,\"messageRetentionDuration\":\"$$RETENTION\"$$PUSH_CONFIG}"; \
 				echo "Writing subscription to config: $$SUB_JSON"; \
 				JSON_OUTPUT="$$JSON_OUTPUT$$SUB_JSON"; \
 			done; \
@@ -125,60 +220,83 @@ sync-from-gcp:
 
 sync-to-gcp:
 	@echo "Syncing configuration to GCP..."
-	@echo "Using PROJECT_ID: $(PROJECT_ID)"
-	@if [ -z "$(PROJECT_ID)" ]; then \
-		echo "Error: PROJECT_ID environment variable is not set"; \
-		exit 1; \
-	fi
-	@if [ ! -f "config/pubsub-config.json" ]; then \
-		echo "Error: config/pubsub-config.json not found"; \
-		exit 1; \
-	fi
-	@CONFIG=`cat config/pubsub-config.json`; \
-	GCP_TOPICS=`gcloud pubsub topics list --project="$(PROJECT_ID)" --format="value(name)"`; \
-	ACCESS_TOKEN=`gcloud auth print-access-token`; \
-	echo "$$CONFIG" | jq -r '.topics[] | .name' | while read -r TOPIC_NAME; do \
-		echo "--- Processing Topic: $$TOPIC_NAME ---"; \
-		TOPIC_PATH="projects/$(PROJECT_ID)/topics/$$TOPIC_NAME"; \
-		if ! echo "$$GCP_TOPICS" | grep -qF "$$TOPIC_PATH"; then \
-			echo "Creating topic: $$TOPIC_NAME"; \
-			gcloud pubsub topics create "$$TOPIC_NAME" --project="$(PROJECT_ID)" || true; \
-		else \
-			echo "Topic $$TOPIC_NAME already exists, skipping creation"; \
-		fi; \
-		_DEBUG_GCP_SUBS_JSON=`curl -s -H "Authorization: Bearer $$ACCESS_TOKEN" \
-			"https://pubsub.googleapis.com/v1/projects/$(PROJECT_ID)/topics/$$TOPIC_NAME/subscriptions"`; \
-		echo "--> DEBUG: Direct curl JSON output for $$TOPIC_NAME: [$$_DEBUG_GCP_SUBS_JSON]"; \
-		GCP_SUBS=`echo "$$_DEBUG_GCP_SUBS_JSON" | jq -r '.subscriptions[]? // empty'`; \
-		echo "--> GCP Subscriptions for topic $$TOPIC_NAME (from REST): [$$GCP_SUBS]"; \
-		LOCAL_SUB_NAMES=`echo "$$CONFIG" | jq -r --arg topic "$$TOPIC_NAME" '.topics[] | select(.name == $$topic) | .subscriptions[] | .name'`; \
-		for SUB_NAME in $$LOCAL_SUB_NAMES; do \
-			echo "  --> Processing Local SUB_NAME: [$$SUB_NAME]"; \
-			SUB_PATH="projects/$(PROJECT_ID)/subscriptions/$$SUB_NAME"; \
-			echo "  --> Checking existence for SUB_PATH: [$$SUB_PATH]"; \
-			if ! echo "$$GCP_SUBS" | grep -qxF "$$SUB_PATH"; then \
-				echo "  Creating subscription: $$SUB_NAME for topic $$TOPIC_NAME"; \
-				SUB_CONFIG=`echo "$$CONFIG" | jq -r --arg topic "$$TOPIC_NAME" --arg sub "$$SUB_NAME" '.topics[] | select(.name == $$topic) | .subscriptions[] | select(.name == $$sub)'`; \
-				CMD="gcloud pubsub subscriptions create $$SUB_NAME --topic=$$TOPIC_NAME --project=$(PROJECT_ID)"; \
-				PUSH_ENDPOINT=`echo "$$SUB_CONFIG" | jq -r '.pushEndpoint // empty'`; \
-				if [ -n "$$PUSH_ENDPOINT" ] && [ "$$PUSH_ENDPOINT" != "null" ] && [ "$$PUSH_ENDPOINT" != "{}" ]; then \
-					CMD="$$CMD --push-endpoint=$$PUSH_ENDPOINT"; \
-					PUSH_ATTRS=`echo "$$SUB_CONFIG" | jq -r '.pushConfig.attributes // empty'`; \
-					if [ -n "$$PUSH_ATTRS" ] && [ "$$PUSH_ATTRS" != "null" ] && [ "$$PUSH_ATTRS" != "{}" ]; then \
-						CMD="$$CMD --push-attributes=$$PUSH_ATTRS"; \
+	@if [ -z "$(PROJECT_ID)" ]; then echo "Error: PROJECT_ID environment variable is not set"; exit 1; fi
+	$(call detect_environment)
+	@echo "Using PROJECT_ID: $(PROJECT_ID) in $(ENV) environment"
+	@if [ ! -f "config/pubsub-config.json" ]; then echo "Error: config/pubsub-config.json not found"; exit 1; fi
+	@echo "Creating topics from config..."
+	@for topic in $$(jq -r '.topics[].name' config/pubsub-config.json); do \
+		echo "Creating topic: $$topic"; \
+		gcloud pubsub topics create "$$topic" --project="$(PROJECT_ID)" 2>/dev/null || true; \
+	done
+	@echo "Creating/updating subscriptions..."
+	@for topic in $$(jq -r '.topics[].name' config/pubsub-config.json); do \
+		echo "Processing subscriptions for topic: $$topic"; \
+		for sub in $$(jq -r --arg t "$$topic" '.topics[] | select(.name == $$t) | .subscriptions[].name' config/pubsub-config.json); do \
+			sub_type=$$(jq -r --arg t "$$topic" --arg s "$$sub" '.topics[] | select(.name == $$t) | .subscriptions[] | select(.name == $$s) | .type // "pull"' config/pubsub-config.json); \
+			echo "  Processing subscription: $$sub (type: $$sub_type)"; \
+			ack_deadline=$$(jq -r --arg t "$$topic" --arg s "$$sub" '.topics[] | select(.name == $$t) | .subscriptions[] | select(.name == $$s) | .ackDeadlineSeconds // 10' config/pubsub-config.json); \
+			retention=$$(jq -r --arg t "$$topic" --arg s "$$sub" '.topics[] | select(.name == $$t) | .subscriptions[] | select(.name == $$s) | .messageRetentionDuration // "604800s"' config/pubsub-config.json); \
+			SUB_EXISTS=false; \
+			SUB_TOPIC=""; \
+			if gcloud pubsub subscriptions describe "$$sub" --project="$(PROJECT_ID)" > /dev/null 2>&1; then \
+				SUB_EXISTS=true; \
+				SUB_TOPIC=$$(gcloud pubsub subscriptions describe "$$sub" --project="$(PROJECT_ID)" --format="value(topic)"); \
+				if [ "$$SUB_TOPIC" != "projects/$(PROJECT_ID)/topics/$$topic" ]; then \
+					echo "    Subscription exists but points to wrong topic ($$SUB_TOPIC), recreating..."; \
+					gcloud pubsub subscriptions delete "$$sub" --project="$(PROJECT_ID)" --quiet; \
+					SUB_EXISTS=false; \
+				fi; \
+			fi; \
+			if [ "$$sub_type" = "push" ]; then \
+				if [ "$(ENV)" = "prod" ]; then \
+					push_endpoint=$$(jq -r --arg t "$$topic" --arg s "$$sub" '.topics[] | select(.name == $$t) | .subscriptions[] | select(.name == $$s) | .pushEndpointProd // ""' config/pubsub-config.json); \
+				elif [ "$(ENV)" = "staging" ]; then \
+					push_endpoint=$$(jq -r --arg t "$$topic" --arg s "$$sub" '.topics[] | select(.name == $$t) | .subscriptions[] | select(.name == $$s) | .pushEndpointStaging // ""' config/pubsub-config.json); \
+				else \
+					push_endpoint=$$(jq -r --arg t "$$topic" --arg s "$$sub" '.topics[] | select(.name == $$t) | .subscriptions[] | select(.name == $$s) | .pushEndpointDev // ""' config/pubsub-config.json); \
+					if [ -z "$$push_endpoint" ] || [ "$$push_endpoint" = "null" ]; then \
+						push_endpoint=$$(jq -r --arg t "$$topic" --arg s "$$sub" '.topics[] | select(.name == $$t) | .subscriptions[] | select(.name == $$s) | .pushEndpoint // ""' config/pubsub-config.json); \
 					fi; \
 				fi; \
-				ACK_DEADLINE=`echo "$$SUB_CONFIG" | jq -r '.ackDeadlineSeconds // 10'`; \
-				RETENTION=`echo "$$SUB_CONFIG" | jq -r '.messageRetentionDuration // "604800s"'`; \
-				CMD="$$CMD --ack-deadline=$$ACK_DEADLINE --message-retention-duration=$$RETENTION"; \
-				eval "$$CMD" || true; \
+				echo "    Recreating push subscription..."; \
+				gcloud pubsub subscriptions delete "$$sub" --project="$(PROJECT_ID)" --quiet 2>/dev/null || true; \
+				if [ -n "$$push_endpoint" ]; then \
+					if echo "$$push_endpoint" | grep -q "host.docker.internal"; then \
+						url_path=$$(echo "$$push_endpoint" | sed -n 's|.*/||p'); \
+						if [ -z "$$url_path" ]; then url_path="pubsub-placeholder"; fi; \
+						if [ "$(ENV)" = "prod" ]; then \
+							actual_endpoint="$(PROD_BASE_URL)/$$url_path"; \
+						elif [ "$(ENV)" = "staging" ]; then \
+							actual_endpoint="$(STAGING_BASE_URL)/$$url_path"; \
+						else \
+							actual_endpoint="$(DEV_BASE_URL)/$$url_path"; \
+						fi; \
+						echo "    Creating push subscription with endpoint: $$actual_endpoint"; \
+						gcloud pubsub subscriptions create "$$sub" --topic="$$topic" --project="$(PROJECT_ID)" \
+							--push-endpoint="$$actual_endpoint" \
+							--ack-deadline=$$ack_deadline --message-retention-duration=$$retention; \
+					else \
+						echo "    Creating push subscription with explicit endpoint: $$push_endpoint"; \
+						gcloud pubsub subscriptions create "$$sub" --topic="$$topic" --project="$(PROJECT_ID)" \
+							--push-endpoint="$$push_endpoint" \
+							--ack-deadline=$$ack_deadline --message-retention-duration=$$retention; \
+					fi; \
+				else \
+					echo "    WARNING: No push endpoint defined for push subscription $$sub, creating as pull"; \
+					gcloud pubsub subscriptions create "$$sub" --topic="$$topic" --project="$(PROJECT_ID)" \
+						--ack-deadline=$$ack_deadline --message-retention-duration=$$retention; \
+				fi; \
 			else \
-				echo "  Subscription $$SUB_NAME already exists in GCP, skipping creation"; \
-			fi \
+				if [ "$$SUB_EXISTS" = false ]; then \
+					echo "    Creating pull subscription"; \
+					gcloud pubsub subscriptions create "$$sub" --topic="$$topic" --project="$(PROJECT_ID)" \
+						--ack-deadline=$$ack_deadline --message-retention-duration=$$retention; \
+				fi; \
+			fi; \
 		done; \
-		echo "--- Finished processing topic $$TOPIC_NAME ---"; \
 	done
-	@echo "Successfully synced local configuration to GCP Pub/Sub"
+	@echo "Successfully synced configuration to GCP"
 
 clean:
 	pkill -f "bun.*src/index.ts" || true
