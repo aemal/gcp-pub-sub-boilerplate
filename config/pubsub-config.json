@@ -11,7 +11,25 @@
           "messageRetentionDuration": "604800s",
           "pushEndpointDev": "http://host.docker.internal:3001/example",
           "pushEndpointStaging": "https://staging-api.example.com/example",
-          "pushEndpointProd": "https://api.example.com/example",
+          "pushEndpointProd": "https://api.example.com/example1",
+          "pushConfig": {
+            "attributes": {}
+          }
+        }
+      ]
+    },
+    {
+      "name": "my-topic2",
+      "subscriptions": [
+        {
+          "name": "my-subscription2",
+          "type": "push",
+          "pushEndpoint": "https://api.example.com/example",
+          "ackDeadlineSeconds": 10,
+          "messageRetentionDuration": "604800s",
+          "pushEndpointDev": "http://host.docker.internal:3001/example",
+          "pushEndpointStaging": "https://staging-api.example.com/example",
+          "pushEndpointProd": "https://api.example.com/example2",
           "pushConfig": {
             "attributes": {}
           }
