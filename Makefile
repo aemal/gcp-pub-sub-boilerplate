@@ -121,6 +121,7 @@ sync-from-gcp:
 		exit 1; \
 	fi
 	@echo "Fetching topics from GCP..."
+	@mkdir -p config
 	@TOPICS=$$(gcloud pubsub topics list --project="$(PROJECT_ID)" --format="value(name)"); \
 	echo "Found topics: $$TOPICS"; \
 	JSON_OUTPUT='{"topics": ['; \
@@ -168,16 +169,12 @@ sync-from-gcp:
 				if [ -n "$$PUSH_ENDPOINT" ] && [ "$$PUSH_ENDPOINT" != "null" ] && [ "$$PUSH_ENDPOINT" != "{}" ]; then \
 					SUB_TYPE="push"; \
 					PUSH_CONFIG=",\"pushConfig\":{\"attributes\":$$PUSH_ATTRIBUTES}"; \
-					
-					# Check if this subscription already exists in local config
 					if [ -f "config/pubsub-config.json" ]; then \
 						EXISTING_SUB_JSON=$$(cat config/pubsub-config.json | jq -r --arg topic "$$TOPIC_NAME" --arg sub "$$SUB_NAME" '.topics[] | select(.name == $$topic) | .subscriptions[] | select(.name == $$sub) // empty'); \
 						if [ -n "$$EXISTING_SUB_JSON" ]; then \
-							# Extract environment-specific endpoints if they exist
 							PUSH_DEV=$$(echo "$$EXISTING_SUB_JSON" | jq -r '.pushEndpointDev // empty'); \
 							PUSH_STAGING=$$(echo "$$EXISTING_SUB_JSON" | jq -r '.pushEndpointStaging // empty'); \
 							PUSH_PROD=$$(echo "$$EXISTING_SUB_JSON" | jq -r '.pushEndpointProd // empty'); \
-							
 							ENV_ENDPOINTS=""; \
 							if [ -n "$$PUSH_DEV" ] && [ "$$PUSH_DEV" != "null" ]; then \
 								ENV_ENDPOINTS="$$ENV_ENDPOINTS,\"pushEndpointDev\":\"$$PUSH_DEV\""; \
@@ -188,8 +185,6 @@ sync-from-gcp:
 							if [ -n "$$PUSH_PROD" ] && [ "$$PUSH_PROD" != "null" ]; then \
 								ENV_ENDPOINTS="$$ENV_ENDPOINTS,\"pushEndpointProd\":\"$$PUSH_PROD\""; \
 							fi; \
-							
-							# If we found environment-specific endpoints, add them to the JSON
 							if [ -n "$$ENV_ENDPOINTS" ]; then \
 								SUB_JSON="{\"name\":\"$$SUB_NAME\",\"type\":\"$$SUB_TYPE\",\"pushEndpoint\":\"$$PUSH_ENDPOINT\",\"ackDeadlineSeconds\":$$ACK_DEADLINE,\"messageRetentionDuration\":\"$$RETENTION\"$$ENV_ENDPOINTS$$PUSH_CONFIG}"; \
 							else \
@@ -224,6 +219,39 @@ sync-to-gcp:
 	$(call detect_environment)
 	@echo "Using PROJECT_ID: $(PROJECT_ID) in $(ENV) environment"
 	@if [ ! -f "config/pubsub-config.json" ]; then echo "Error: config/pubsub-config.json not found"; exit 1; fi
+	
+	@echo "Checking for topics to delete..."
+	@CONFIG_TOPICS=$$(jq -r '.topics[].name' config/pubsub-config.json | sort | tr '\n' ' '); \
+	GCP_TOPICS=$$(gcloud pubsub topics list --project="$(PROJECT_ID)" --format="value(name)" | xargs -I{} basename {} | sort); \
+	for topic in $$GCP_TOPICS; do \
+		if ! echo "$$CONFIG_TOPICS" | grep -w "$$topic" > /dev/null; then \
+			echo "Deleting topic not in config: $$topic"; \
+			gcloud pubsub topics delete "$$topic" --project="$(PROJECT_ID)" --quiet; \
+		fi; \
+	done
+	
+	@echo "Checking for subscriptions to delete..."
+	@CONFIG_SUBS=''; \
+	for topic in $$(jq -r '.topics[].name' config/pubsub-config.json); do \
+		for sub in $$(jq -r --arg t "$$topic" '.topics[] | select(.name == $$t) | .subscriptions[].name' config/pubsub-config.json); do \
+			CONFIG_SUBS="$$CONFIG_SUBS $$sub"; \
+		done; \
+	done; \
+	echo "Subscriptions in config: $$CONFIG_SUBS"; \
+	GCP_SUBS=$$(gcloud pubsub subscriptions list --project="$(PROJECT_ID)" --format="value(name)" | xargs -I{} basename {}); \
+	for sub in $$GCP_SUBS; do \
+		if ! echo "$$CONFIG_SUBS" | grep -w "$$sub" > /dev/null; then \
+			echo "Deleting subscription not in config: $$sub"; \
+			gcloud pubsub subscriptions delete "$$sub" --project="$(PROJECT_ID)" --quiet; \
+			continue; \
+		fi; \
+		SUB_TOPIC=$$(gcloud pubsub subscriptions describe "$$sub" --project="$(PROJECT_ID)" --format="value(topic)" 2>/dev/null || echo ""); \
+		if [ -z "$$SUB_TOPIC" ] || echo "$$SUB_TOPIC" | grep -q "_deleted-topic_"; then \
+			echo "Deleting subscription with deleted topic: $$sub"; \
+			gcloud pubsub subscriptions delete "$$sub" --project="$(PROJECT_ID)" --quiet; \
+		fi; \
+	done
+	
 	@echo "Creating topics from config..."
 	@for topic in $$(jq -r '.topics[].name' config/pubsub-config.json); do \
 		echo "Creating topic: $$topic"; \

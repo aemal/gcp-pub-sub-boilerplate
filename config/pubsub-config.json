@@ -5,38 +5,16 @@
       "subscriptions": [
         {
           "name": "my-subscription",
-          "type": "pull",
-          "pushEndpoint": "",
-          "ackDeadlineSeconds": 10,
-          "messageRetentionDuration": "604800s"
-        }
-      ]
-    },
-    {
-      "name": "my-topic2",
-      "subscriptions": [
-        {
-          "name": "my-subscription2",
           "type": "push",
-          "pushEndpointDev": "http://host.docker.internal:3001/example3",
-          "pushEndpointStaging": "https://staging-api.example.com/example3",
-          "pushEndpointProd": "https://api.example.com/example3",
+          "pushEndpoint": "https://api.example.com/example",
           "ackDeadlineSeconds": 10,
-          "messageRetentionDuration": "604800s"
-        }
-      ]
-    },
-    {
-      "name": "my-topic3",
-      "subscriptions": [
-        {
-          "name": "my-subscription3",
-          "type": "push",
-          "pushEndpointDev": "http://host.docker.internal:3001/example333",
-          "pushEndpointStaging": "https://staging-api.example.com/example333",
-          "pushEndpointProd": "https://api.example.com/example333",
-          "ackDeadlineSeconds": 10,
-          "messageRetentionDuration": "604800s"
+          "messageRetentionDuration": "604800s",
+          "pushEndpointDev": "http://host.docker.internal:3001/example",
+          "pushEndpointStaging": "https://staging-api.example.com/example",
+          "pushEndpointProd": "https://api.example.com/example",
+          "pushConfig": {
+            "attributes": {}
+          }
         }
       ]
     }
